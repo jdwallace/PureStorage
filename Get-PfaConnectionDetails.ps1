@@ -25,7 +25,7 @@ $PureConns = (Get-Pfa2Connection -Array $FlashArray | Where-Object { !($_.Volume
 # For each Connection, build a row with the desired values from Connection, Host, and Volume objects. Add it to ConnDetails.
 ForEach ($PureConn in $PureConns)
 {
-    $PureHost = (Get-Pfa2Host -Array $FlashArray | Where-Object { $_.Name -eq $PureConn.Host.Name })
+	$PureHost = (Get-Pfa2Host -Array $FlashArray | Where-Object { $_.Name -eq $PureConn.Host.Name })
 	$PureVol = (Get-Pfa2Volume -Array $FlashArray | Where-Object { $_.Name -eq $PureConn.Volume.Name })
 	
 	# Calculate and format Host Written Capacity, Volume Provisioned Capacity
@@ -34,7 +34,7 @@ ForEach ($PureConn in $PureConns)
 
 	$NewRow = "$($PureHost.Name),$($PureVol.Name),$($PureConn.Lun),$($PureHost.Iqns),$($PureHost.Wwns),"
 	$NewRow += "$($VolumeProvisionedCapacity),$($HostWrittenCapacity)"
-    [void]$ConnDetails.Add($NewRow)
+	[void]$ConnDetails.Add($NewRow)
 }
 
 # Print ConnDetails and make it look nice
