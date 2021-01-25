@@ -2,12 +2,12 @@
 	.NOTES
 	===========================================================================
 	 Created on:   	1/23/2021
-	 Updated on: 	1/24/2021
+	 Updated on:    1/25/2021
 	 Created by:   	JD Wallace
 	 Filename:     	Get-PfaConnectionDetails.ps1
 	===========================================================================
 	.DESCRIPTION
-		Output FlashArray connection details including Host and Volume names, LUN ID, IQN / WWN, and Volume Size.
+	Output FlashArray connection details including Host and Volume names, LUN ID, IQN / WWN, Volume Provisioned Size, and Host Capacity Written.
 #>
 
 Import-Module PureStoragePowerShellSDK2
