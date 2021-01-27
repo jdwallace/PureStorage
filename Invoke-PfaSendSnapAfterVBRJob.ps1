@@ -4,9 +4,9 @@
 	 Created on:   	1/26/2021
 	 Updated on:    1/27/2021
 	 Created by:   	JD Wallace
-     Filename:     	Invoke-PfaSendSnapAfterVBRJob.ps1
-     Acknowledgements: 
-     Get Veeam Job Name - https://blog.mwpreston.net/2016/11/17/setting-yourself-up-for-success-with-veeam-pre-job-scripts/
+	 Filename:     	Invoke-PfaSendSnapAfterVBRJob.ps1
+	 Acknowledgements: 
+	 Get Veeam Job Name - https://blog.mwpreston.net/2016/11/17/setting-yourself-up-for-success-with-veeam-pre-job-scripts/
 	===========================================================================
 	.DESCRIPTION
     A Veeam VBR post-job script to be used with Pure FlashArray snapshot only job. Will replicate the new snapshot to a secondary FlashArray.
