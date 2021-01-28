@@ -44,7 +44,7 @@ $VbrSession = Get-VBRBackupSession | Where-Object {$_.jobId -eq $VbrJob.Id.Guid}
 $jobNameInSnap = ".VEEAM-ProdSnap-" + $VbrJob.Name -replace ' ','-'
 $PfaSnapshots = Get-StoragePluginSnapshot | Where-Object { $_.Name -cmatch $jobNameInSnap }
 
-#Fore each Snapshot
+#For each Snapshot, check that it's from the latest session and replicate if so
 ForEach ($PfaSnapshot in $PfaSnapshots)
 {
 	#TODO Make sure to only replicate snap for latest session
@@ -52,7 +52,6 @@ ForEach ($PfaSnapshot in $PfaSnapshots)
 	$snapSendCLI = "purevol send --to $PfaSnapTarget " + $PfaSnapshot.Name
 	# Invoke-Pfa2CLICommand to call "purevol send" to replicate the new snapshot
 	Invoke-Pfa2CLICommand -EndPoint $arrayEndpoint -Credential $arrayCredential -CommandText $snapSendCLI
-
-	# Disconnect from FlashArray
-	Disconnect-Pfa2Array -Array $FlashArray
 }
+# Disconnect from FlashArray
+Disconnect-Pfa2Array -Array $FlashArray
