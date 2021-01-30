@@ -49,7 +49,7 @@ ForEach($LabFA in $LabFAs) {
     #Volumes
     $Volumes = Get-Pfa2Volume -Array $LabFA | Where-Object { $_.Name -cmatch $volumePattern }
     ForEach($Volume in $Volumes) {
-        Remove-Pfa2Connection -Array $LabFA -VolumeNames $Volume.Name
+        Remove-Pfa2Connection -Array $LabFA -VolumeNames $Volume.Name -HostGroupNames "Veeam-Proxies"
         Remove-Pfa2Volume -Array $LabFA -IDs $Volume.Id
     }
     ForEach($Volume in $Volumes) {
