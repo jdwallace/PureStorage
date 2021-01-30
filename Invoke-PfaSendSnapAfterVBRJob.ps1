@@ -29,7 +29,7 @@ $arrayPassword = "pureuser"
 # Must be pre-created and populated with Veeam Proxy servers in order for Veeam to scan replicas on target FlashArray and inventory VMs
 $PfaVeeamHostGroup = "Veeam-Proxies"
 # If DisableSourceRetention is TRUE, Snapshots will be removed from Source FlashArray after replication
-$DisableSourceRetention = $false
+$DisableSourceRetention = $true
 # TestMode will use a specific Veeam Job Name, otherwise figure out Job Name based on which one launched the script
 $TestMode = $false
 $TestModeJobName = "FA Snapshot Job"
@@ -68,6 +68,7 @@ $PfaSnapshots = Get-StoragePluginSnapshot | Where-Object { $_.Name -cmatch $jobN
 $PfaConfirmedSnapshots = New-Object -TypeName System.Collections.ArrayList
 
 #For each FlashArray snapshot, check that it's from the latest session and replicate if so
+#Do all of these first so replications can happen in parallel
 ForEach ($PfaSnapshot in $PfaSnapshots) {
 	# If Snapshot was created after latest session start time, it must have been created during this session
 	If ($PfaSnapshot.CreationTimeSrv -gt $VbrSession.Info.CreationTime) {
@@ -75,7 +76,6 @@ ForEach ($PfaSnapshot in $PfaSnapshots) {
 		$snapSendCLI = "purevol send --to " + $targetFlashArray.ArrayName.Split('.')[0] + " " + $PfaSnapshot.Name
 		# Invoke-Pfa2CLICommand to call 'purevol send' to replicate the snapshot
 		Invoke-Pfa2CLICommand -EndPoint $sourceArrayEndpoint -Credential $arrayCredential -CommandText $snapSendCLI
-
 		$PfaConfirmedSnapshots += $PfaSnapshot
 	}
 }
@@ -87,20 +87,22 @@ ForEach ($PfaConfirmedSnapshot in $PfaConfirmedSnapshots) {
 		$replicationStatus = Get-Pfa2VolumeSnapshotTransfer -Array $sourceFlashArray -Name $PfaConfirmedSnapshot.Name
 	} while ($null -eq $replicationStatus.Completed)
 
-	# Get Replicated Snapshot
+	# Get Source and Replica Snapshots
+	$PfaSnapshotSource = Get-Pfa2VolumeSnapshot -Array $sourceFlashArray -Name $PfaConfirmedSnapshot.Name
 	$PfaSnapshotReplica = Get-Pfa2VolumeSnapshot -Array $targetFlashArray -Name ($sourceFlashArray.ArrayName.Split('.')[0] + ":" + $PfaConfirmedSnapshot.Name)
 
 	# Clone Replicated Snapshot, Overwriting existing
 	$src = New-Pfa2ReferenceObject -Id $PfaSnapshotReplica.id -Name $PfaSnapshotReplica.Name
 	$PfaSnapshotClone = New-Pfa2Volume -Array $targetFlashArray -Overwrite $true -Source $src -Name ($PfaSnapshotReplica.Source.Name.Split(':')[1] + "-VEEAM-ProdSnap-Replica")
-	# Connect clone to Veeam Proxy Host Group
+	# Connect clone to Veeam Proxy Host Group if it isn't connected
 	if ($null -eq (Get-Pfa2Connection -Array $targetFlashArray -HostGroupNames $PfaVeeamHostGroup -VolumeNames $PfaSnapshotClone.Name)) {
 		New-Pfa2Connection -Array $targetFlashArray -HostGroupNames $PfaVeeamHostGroup -VolumeNames $PfaSnapshotClone.Name
 	}
 	# Create Snapshot of Clone
 	New-Pfa2VolumeSnapshot -Array $targetFlashArray -SourceNames $PfaSnapshotClone.Name
+	Start-Sleep -s 1
 	
-	#Get all cloned snapshots 
+	#Get all of clone's snapshots 
 	$PfaReplicaCloneSnaps = Get-Pfa2VolumeSnapshot -Array $targetFlashArray -Destroyed $false -SourceNames $PfaSnapshotClone.Name | Sort-Object Created -Descending 
 
 	# See if number of snaps exceeds Job retention policy
@@ -110,14 +112,22 @@ ForEach ($PfaConfirmedSnapshot in $PfaConfirmedSnapshots) {
 			Remove-Pfa2VolumeSnapshot -Array $targetFlashArray -Name $PfaReplicaCloneSnaps[$i].Name
 		}
 	}
-	# Delete original Snapshot Replica
-	#TODO, Handle Baseline case
-	# Remove-Pfa2VolumeSnapshot -Array $targetFlashArray -Name $PfaSnapshotReplica.Name
 	
-	# Delete snapshot from Source FlashArray
+	# Delete old Snapshot Replica's from Target FlashArray but keep latest as baseline
+	$PfaTempSnapshots = Get-Pfa2VolumeSnapshot -Array $targetFlashArray -Destroyed $false | Where-Object { $_.Name -cmatch ($PfaSnapshotReplica.Name.Split('.')[0] + ".VEEAM-ProdSnap-FA-Snapshot-Job") }
+	ForEach($PfaTempSnapshot in $PfaTempSnapshots) {
+		If ($PfaTempSnapshot.Id -ne $PfaSnapshotReplica.Id) {
+			Remove-Pfa2VolumeSnapshot -Array $targetFlashArray -Ids $PfaTempSnapshot.Id
+		}
+	}
+	# Delete old Snapshots from Source FlashArray but keep latest as baseline
 	if ($DisableSourceRetention) {
-		#TODO, Handle Baseline case
-		# Remove-Pfa2VolumeSnapshot -Array $sourceFlashArray -Name $PfaConfirmedSnapshot.Name
+		$PfaTempSnapshots = Get-Pfa2VolumeSnapshot -Array $sourceFlashArray -Destroyed $false | Where-Object { $_.Name -cmatch ($PfaSnapshotSource.Name.Split('.')[0] + ".VEEAM-ProdSnap-FA-Snapshot-Job") }
+		ForEach($PfaTempSnapshot in $PfaTempSnapshots) {
+			If ($PfaTempSnapshot.Id -ne $PfaSnapshotSource.Id) {
+				Remove-Pfa2VolumeSnapshot -Array $sourceFlashArray -Ids $PfaTempSnapshot.Id
+			}
+		}
 	}
 }
 # Disconnect from FlashArray
