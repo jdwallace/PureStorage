@@ -41,7 +41,8 @@ ForEach($LabFA in $LabFAs) {
         Invoke-Pfa2CLICommand -EndPoint $LabFA.ArrayName -Credential $arrayCredential -CommandText $CLICommand
     }
     ForEach($Snapshot in $Snapshots) {
-        # Remove-Pfa2VolumeSnapshot -Array $LabFA -IDs $Snapshot.Id -Eradicate
+        $CLICommand = "purevol eradicate " + $Snapshot.Name
+        Invoke-Pfa2CLICommand -EndPoint $LabFA.ArrayName -Credential $arrayCredential -CommandText $CLICommand
         $CLICommand = "purevol eradicate --replication-snapshot " + $Snapshot.Name
         Invoke-Pfa2CLICommand -EndPoint $LabFA.ArrayName -Credential $arrayCredential -CommandText $CLICommand
     }
