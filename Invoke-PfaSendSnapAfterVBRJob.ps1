@@ -2,7 +2,7 @@
 	.NOTES
 	===========================================================================
 	 Created on:   	1/26/2021
-	 Updated on:    1/29/2021
+	 Updated on:    1/31/2021
 	 Created by:   	JD Wallace
 	 Filename:     	Invoke-PfaSendSnapAfterVBRJob.ps1
 	 Acknowledgements: 
@@ -11,7 +11,6 @@
 	.DESCRIPTION
 	A Veeam VBR post-job script to be used with Pure FlashArray snapshot only job. Will replicate the new snapshot to a secondary FlashArray.
 	After replicating, the replica will be cloned to a new volume and then snapped in order to be scannable by the Pure plug-in for Veeam.
-	Cleanup of unused snapshots on both source and target FlashArray not yet implemented.
 	Requires Purity//FA 6.1.0 or later.
 #>
 <#===========================================================================
@@ -30,6 +29,8 @@ $arrayPassword = "pureuser"
 $PfaVeeamHostGroup = "Veeam-Proxies"
 # If DisableSourceRetention is TRUE, Snapshots will be removed from Source FlashArray after replication
 $DisableSourceRetention = $true
+# If RescanAfterJob is TRUE, VBR will rescan Pure Storage via USAPI Plug-in to immediately detect new remote snapshots
+$RescanAfterJob = $true
 # TestMode will use a specific Veeam Job Name, otherwise figure out Job Name based on which one launched the script
 $TestMode = $false
 $TestModeJobName = "FA Snapshot Job"
@@ -83,7 +84,7 @@ ForEach ($PfaSnapshot in $PfaSnapshots) {
 ForEach ($PfaConfirmedSnapshot in $PfaConfirmedSnapshots) {
 	# Wait for replication to complete
 	do {
-		Start-Sleep -s 5
+		Start-Sleep -Seconds 5
 		$replicationStatus = Get-Pfa2VolumeSnapshotTransfer -Array $sourceFlashArray -Name $PfaConfirmedSnapshot.Name
 	} while ($null -eq $replicationStatus.Completed)
 
@@ -99,8 +100,11 @@ ForEach ($PfaConfirmedSnapshot in $PfaConfirmedSnapshots) {
 		New-Pfa2Connection -Array $targetFlashArray -HostGroupNames $PfaVeeamHostGroup -VolumeNames $PfaSnapshotClone.Name
 	}
 	# Create Snapshot of Clone
-	New-Pfa2VolumeSnapshot -Array $targetFlashArray -SourceNames $PfaSnapshotClone.Name
-	Start-Sleep -s 1
+	$PfaReplicaClone = New-Pfa2VolumeSnapshot -Array $targetFlashArray -SourceNames $PfaSnapshotClone.Name
+	# Wait until Snapshot is created
+	while ($null -eq $PfaReplicaClone.Created) {
+		Start-Sleep -Seconds 1
+	}
 	
 	#Get all of clone's snapshots 
 	$PfaReplicaCloneSnaps = Get-Pfa2VolumeSnapshot -Array $targetFlashArray -Destroyed $false -SourceNames $PfaSnapshotClone.Name | Sort-Object Created -Descending 
@@ -112,18 +116,17 @@ ForEach ($PfaConfirmedSnapshot in $PfaConfirmedSnapshots) {
 			Remove-Pfa2VolumeSnapshot -Array $targetFlashArray -Name $PfaReplicaCloneSnaps[$i].Name
 		}
 	}
-	
-	# Delete old Snapshot Replica's from Target FlashArray but keep latest as baseline
+	# Delete old Snapshot Replicas from Target FlashArray but keep latest as baseline
 	$PfaTempSnapshots = Get-Pfa2VolumeSnapshot -Array $targetFlashArray -Destroyed $false | Where-Object { $_.Name -cmatch ($PfaSnapshotReplica.Name.Split('.')[0] + ".VEEAM-ProdSnap-FA-Snapshot-Job") }
-	ForEach($PfaTempSnapshot in $PfaTempSnapshots) {
-		If ($PfaTempSnapshot.Id -ne $PfaSnapshotReplica.Id) {
+	ForEach ($PfaTempSnapshot in $PfaTempSnapshots) {
+		If ($PfaTempSnapshot.Id -ne $PfaSnapshotReplica.Id) { 
 			Remove-Pfa2VolumeSnapshot -Array $targetFlashArray -Ids $PfaTempSnapshot.Id
 		}
 	}
 	# Delete old Snapshots from Source FlashArray but keep latest as baseline
 	if ($DisableSourceRetention) {
 		$PfaTempSnapshots = Get-Pfa2VolumeSnapshot -Array $sourceFlashArray -Destroyed $false | Where-Object { $_.Name -cmatch ($PfaSnapshotSource.Name.Split('.')[0] + ".VEEAM-ProdSnap-FA-Snapshot-Job") }
-		ForEach($PfaTempSnapshot in $PfaTempSnapshots) {
+		ForEach ($PfaTempSnapshot in $PfaTempSnapshots) {
 			If ($PfaTempSnapshot.Id -ne $PfaSnapshotSource.Id) {
 				Remove-Pfa2VolumeSnapshot -Array $sourceFlashArray -Ids $PfaTempSnapshot.Id
 			}
@@ -133,3 +136,11 @@ ForEach ($PfaConfirmedSnapshot in $PfaConfirmedSnapshots) {
 # Disconnect from FlashArray
 Disconnect-Pfa2Array -Array $sourceFlashArray
 Disconnect-Pfa2Array -Array $targetFlashArray
+
+# Tell VBR to Rescan Connected FlashArrays
+if($RescanAfterJob) {
+	$PlugInHosts = Get-StoragePluginHost -PluginType "FlashArray"
+	ForEach ($PlugInHost in $PlugInHosts) {
+		Sync-StoragePluginHost -Host $PlugInHost
+	} 
+}
