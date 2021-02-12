@@ -193,3 +193,4 @@ if($RescanAfterJob) {
 		Sync-StoragePluginHost -Host $PlugInHost
 	} 
 }
+Exit 0
