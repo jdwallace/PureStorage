@@ -57,7 +57,7 @@ switch ( $VBRVersion ) {
 	}
 	default {
 		Write-Host "No VBR Installation detected at $PathToVBRInstall"
-		Exit(0)
+		Exit 1
 	}
 }
 
@@ -77,7 +77,7 @@ switch ( $sourceFA.Version) {
 	default {
 		Write-Host "Unsupported Purity//FA Version. Minimum version: 6.1 "
 		Write-Host "Target Purity//FA Detected Version: $($sourceFA.Version)"
-		Exit(0)
+		Exit 1
 	}
 }
 switch ( $targetFA.Version) {
@@ -87,7 +87,7 @@ switch ( $targetFA.Version) {
 	default {
 		Write-Host "Unsupported Purity//FA Version. Minimum version: 6.1 "
 		Write-Host "Target Purity//FA Detected Version: $($targetFA.Version)"
-		Exit(0)
+		Exit 1
 	}
 }
 
