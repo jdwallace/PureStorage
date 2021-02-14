@@ -27,9 +27,7 @@ $arrayPassword = "pureuser"
 # Must be pre-created and populated with Veeam Proxy servers in order for Veeam to scan replicas on target FlashArray and inventory VMs
 $PfaVeeamHostGroup = "Veeam-Proxies"
 # If DisableSourceRetention is TRUE, Snapshots will be removed from Source FlashArray after replication
-$DisableSourceRetention = $true
-# If RescanAfterJob is TRUE, VBR will rescan Pure Storage via USAPI Plug-in to immediately detect new remote snapshots
-$RescanAfterJob = $true
+$DisableSourceRetention = $true # EXPERIMENTAL
 # TestMode will use a specific Veeam Job Name, otherwise figure out Job Name based on which one launched the script
 $TestMode = $false
 $TestModeJobName = "FA Snapshot Job"
@@ -94,52 +92,62 @@ switch ( $targetFA.Version) {
 if ($TestMode) {
 	# Get specific job
 	$VbrJob = Get-VBRJob | Where-Object { $_.Name -eq $TestModeJobName }
+	Write-Host "Executing in Test Mode with VBR Job $TestModeJobName"
 }else {
 	# Get Veeam job name from parent process id
 	$parentpid = (Get-WmiObject Win32_Process -Filter "processid='$pid'").parentprocessid.ToString()
 	$parentcmd = (Get-WmiObject Win32_Process -Filter "processid='$parentpid'").CommandLine
 	$jobid = $parentcmd.split('" "')[16]
 	$VbrJob = get-vbrjob | where-object { $_.Id -eq "$jobid" }
+	Write-Host "Executing with VBR Job: $($VbrJob.Name)"
 }
 
 # Get latest job Session (should be the session that called this script)
 switch ( $VBRVersion ) {
 	{$_ -ge 11} {
-		$VbrSession = Get-VBRBackupSession | Where-Object {$_.jobId -eq $VbrJob.Id} | Sort-Object EndTimeUTC -Descending | Select-Object -First 1
+		$VbrSession = Get-VBRBackupSession | Where-Object {$_.jobId -eq $VbrJob.Id} | Sort-Object CreationTimeUTC -Descending | Select-Object -First 1
 	}
 	{$_ -le 10} {
-		$VbrSession = Get-VBRBackupSession | Where-Object {$_.jobId -eq $VbrJob.Id.Guid} | Sort-Object EndTimeUTC -Descending | Select-Object -First 1
+		$VbrSession = Get-VBRBackupSession | Where-Object {$_.jobId -eq $VbrJob.Id.Guid} | Sort-Object CreationTimeUTC -Descending | Select-Object -First 1
 	}
 }
 
 # Get all FlashArray snapshots created from this Job
 $jobNameInSnap = ".VEEAM-ProdSnap-" + $VbrJob.Name -replace ' ','-'
 $PfaSnapshots = Get-StoragePluginSnapshot | Where-Object { $_.Name -cmatch $jobNameInSnap }
+if ($PfaSnapshots.Length -eq 0) { Exit 0 }
 $PfaConfirmedSnapshots = New-Object -TypeName System.Collections.ArrayList
 
 #For each FlashArray snapshot, check that it's from the latest session and replicate if so
-#Do all of these first so replications can happen in parallel
 ForEach ($PfaSnapshot in $PfaSnapshots) {
 	# If Snapshot was created after latest session start time, it must have been created during this session
 	If ($PfaSnapshot.CreationTimeSrv -gt $VbrSession.Info.CreationTime) {
-		# Construct 'purevol send' command
-		$snapSendCLI = "purevol send --to " + $targetFAConnection.ArrayName.Split('.')[0] + " " + $PfaSnapshot.Name
-		# Invoke-Pfa2CLICommand to call 'purevol send' to replicate the snapshot
-		Invoke-Pfa2CLICommand -EndPoint $sourceArrayEndpoint -Credential $arrayCredential -CommandText $snapSendCLI
-		$PfaConfirmedSnapshots += $PfaSnapshot
+		# Ensure snapshot still exists
+		# TODO See if there is a way to force a StoragePluginVolume Rescan and wait for completion instead
+		$PfaSnapshotTest = Get-Pfa2VolumeSnapshot -Array $sourceFAConnection -Name $PfaSnapshot.Name
+		if ($PfaSnapshotTest.Name -eq $PfaSnapshot.Name) {
+			# Construct 'purevol send' command
+			$snapSendCLI = "purevol send --to " + $targetFA.Name + " " + $PfaSnapshot.Name
+			# Invoke-Pfa2CLICommand to call 'purevol send' to replicate the snapshot
+			Invoke-Pfa2CLICommand -EndPoint $sourceArrayEndpoint -Credential $arrayCredential -CommandText $snapSendCLI
+			$PfaConfirmedSnapshots.Add( $PfaSnapshot )
+		}
 	}
 }
+
 # For each FlashArray snapshot which was replicated, clone, snap, then clean up
 ForEach ($PfaConfirmedSnapshot in $PfaConfirmedSnapshots) {
 	# Wait for replication to complete
+	$seconds = 0
 	do {
-		Start-Sleep -Seconds 5
+		Start-Sleep -Seconds $seconds
 		$replicationStatus = Get-Pfa2VolumeSnapshotTransfer -Array $sourceFAConnection -Name $PfaConfirmedSnapshot.Name
+		$seconds = 1
 	} while ($null -eq $replicationStatus.Completed)
-
+	
 	# Get Source and Replica Snapshots
 	$PfaSnapshotSource = Get-Pfa2VolumeSnapshot -Array $sourceFAConnection -Name $PfaConfirmedSnapshot.Name
-	$PfaSnapshotReplica = Get-Pfa2VolumeSnapshot -Array $targetFAConnection -Name ($sourceFAConnection.ArrayName.Split('.')[0] + ":" + $PfaConfirmedSnapshot.Name)
+	$PfaSnapshotReplica = Get-Pfa2VolumeSnapshot -Array $targetFAConnection -Name ($sourceFA.Name + ":" + $PfaConfirmedSnapshot.Name)
 
 	# Clone Replicated Snapshot, Overwriting existing
 	$src = New-Pfa2ReferenceObject -Id $PfaSnapshotReplica.id -Name $PfaSnapshotReplica.Name
@@ -148,13 +156,15 @@ ForEach ($PfaConfirmedSnapshot in $PfaConfirmedSnapshots) {
 	if ($null -eq (Get-Pfa2Connection -Array $targetFAConnection -HostGroupNames $PfaVeeamHostGroup -VolumeNames $PfaSnapshotClone.Name)) {
 		New-Pfa2Connection -Array $targetFAConnection -HostGroupNames $PfaVeeamHostGroup -VolumeNames $PfaSnapshotClone.Name
 	}
-	# Create Snapshot of Clone
-	$PfaReplicaClone = New-Pfa2VolumeSnapshot -Array $targetFAConnection -SourceNames $PfaSnapshotClone.Name
-	# Wait until Snapshot is created
-	while ($null -eq $PfaReplicaClone.Created) {
-		Start-Sleep -Seconds 1
-	}
 	
+	# Create Snapshot of Clone
+	$PfaCloneSnapshot = New-Pfa2VolumeSnapshot -Array $targetFAConnection -SourceNames $PfaSnapshotClone.Name
+	# Wait until Snapshot is created
+	while ($null -eq $PfaCloneSnapshot.Created) {
+		Start-Sleep -Seconds 1
+		$PfaCloneSnapshot = Get-Pfa2VolumeSnapshot -Array $targetFAConnection -IDs $PfaCloneSnapshot.Id
+	}
+
 	#Get all of clone's snapshots 
 	$PfaReplicaCloneSnaps = Get-Pfa2VolumeSnapshot -Array $targetFAConnection -Destroyed $false -SourceNames $PfaSnapshotClone.Name | Sort-Object Created -Descending 
 
@@ -165,6 +175,7 @@ ForEach ($PfaConfirmedSnapshot in $PfaConfirmedSnapshots) {
 			Remove-Pfa2VolumeSnapshot -Array $targetFAConnection -Name $PfaReplicaCloneSnaps[$i].Name
 		}
 	}
+	
 	# Delete old Snapshot Replicas from Target FlashArray but keep latest as baseline
 	$PfaTempSnapshots = Get-Pfa2VolumeSnapshot -Array $targetFAConnection -Destroyed $false | Where-Object { $_.Name -cmatch ($PfaSnapshotReplica.Name.Split('.')[0] + ".VEEAM-ProdSnap-FA-Snapshot-Job") }
 	ForEach ($PfaTempSnapshot in $PfaTempSnapshots) {
@@ -172,8 +183,13 @@ ForEach ($PfaConfirmedSnapshot in $PfaConfirmedSnapshots) {
 			Remove-Pfa2VolumeSnapshot -Array $targetFAConnection -Ids $PfaTempSnapshot.Id
 		}
 	}
+
 	# Delete old Snapshots from Source FlashArray but keep latest as baseline
 	if ($DisableSourceRetention) {
+		<# TODO Need to wait until the new source snapshot has become the baseline. Not sure how to test for this.
+		   For now just wait some amount of time and try. Even if it's not the baseline yet you'll just end
+		   up with an extra snap which will get cleaned up next time the job runs. #>
+		Start-Sleep -Seconds (30)
 		$PfaTempSnapshots = Get-Pfa2VolumeSnapshot -Array $sourceFAConnection -Destroyed $false | Where-Object { $_.Name -cmatch ($PfaSnapshotSource.Name.Split('.')[0] + ".VEEAM-ProdSnap-FA-Snapshot-Job") }
 		ForEach ($PfaTempSnapshot in $PfaTempSnapshots) {
 			If ($PfaTempSnapshot.Id -ne $PfaSnapshotSource.Id) {
@@ -187,10 +203,11 @@ Disconnect-Pfa2Array -Array $sourceFAConnection
 Disconnect-Pfa2Array -Array $targetFAConnection
 
 # Tell VBR to Rescan Connected FlashArrays
-if($RescanAfterJob) {
-	$PlugInHosts = Get-StoragePluginHost -PluginType "FlashArray"
-	ForEach ($PlugInHost in $PlugInHosts) {
-		Sync-StoragePluginHost -Host $PlugInHost
-	} 
+$PlugInHosts = Get-StoragePluginHost -PluginType "FlashArray"
+ForEach ($PlugInHost in $PlugInHosts) {
+	Sync-StoragePluginHost -Host $PlugInHost
+	$PlugInVolumes = Get-StoragePluginVolume -Host $PlugInHost.Name
+	ForEach ($PlugInVolume in $PlugInVolumes) {
+		Sync-StoragePluginVolume -Volume $PlugInVolume
+	}
 }
-Exit 0
